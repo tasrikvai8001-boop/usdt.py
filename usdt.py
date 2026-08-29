@@ -42,7 +42,7 @@ def keep_alive():
 # ============================================
 # --- CONFIGURATION & SECURITY ---
 # ============================================
-BOT_TOKEN = "8979865542:AAH0CnXNCumXFYpRRcxjeNvnjrol9tkFvKw"
+BOT_TOKEN = "8979865542:AAFK_rFUEvobPz9jyHNkiyx-fCNd5cLFeM8"
 ADMIN_ID = 7833766898
 BOT_NAME = "📧 𝒩𝑅 𝑮𝒎𝒂𝒊𝒍 𝑺𝒉𝒐𝒑 𝑩𝑫𝑻 📩"
 DATA_FILE = "nr_gmail_shop_data.json"
@@ -383,22 +383,58 @@ def start_cmd(message):
 
     user = get_user(user_id, message.from_user.first_name, message.from_user.username or "")
 
-    args = message.text.split()
+        args = message.text.split()
+
     if len(args) > 1 and user.get("referred_by") is None:
         ref_id = args[1]
+
         if ref_id != str(user_id) and ref_id in data["users"]:
             update_user(user_id, "referred_by", ref_id)
             ref_user = data["users"][ref_id]
+
             if ref_user.get("referrals", 0) > 15:
-                bot.send_message(ADMIN_ID, f"⚠️ <b>Rapid Referral Alert!</b>\nUser <code>{ref_id}</code> (@{ref_user.get('username')}) has high rapid referrals!", parse_mode="HTML")
+                bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ <b>Rapid Referral Alert!</b>\n"
+                    f"User <code>{ref_id}</code> "
+                    f"(@{ref_user.get('username')}) has high rapid referrals!",
+                    parse_mode="HTML"
+                )
 
     img_buf, captcha_code = generate_image_captcha()
-    update_user(user_id, "state", "verify_captcha_code")
+
     data = load_db()
-    data["users"][str(user_id)]["temp_data"]["captcha_ans"] = captcha_code
+    uid = str(user_id)
+
+    data["users"][uid]["state"] = "verify_captcha_code"
+    data["users"][uid]["temp_data"]["captcha_ans"] = captcha_code
+
     save_db(data)
 
-    bot.send_photo(message.chat.id, img_buf, caption="🤖 <b>SECURITY CAPTCHA CHECK:</b>\n\nছবির ক্যাপচা কোডটি সঠিকভাবে নিচে লিখে দিন:", parse_mode="HTML")
+    bot.send_photo(
+        message.chat.id,
+        img_buf,
+        caption="🤖 <b>SECURITY CAPTCHA CHECK:</b>\n\nছবির ক্যাপচা কোডটি সঠিকভাবে নিচে লিখে দিন:",
+        parse_mode="HTML"
+    )
+
+# এখানে কোনো স্পেস থাকবে না
+img_buf, captcha_code = generate_image_captcha()
+
+data = load_db()
+uid = str(user_id)
+
+data["users"][uid]["state"] = "verify_captcha_code"
+data["users"][uid]["temp_data"]["captcha_ans"] = captcha_code
+
+save_db(data)
+
+bot.send_photo(
+    message.chat.id,
+    img_buf,
+    caption="🤖 <b>SECURITY CAPTCHA CHECK:</b>\n\nছবির ক্যাপচা কোডটি সঠিকভাবে নিচে লিখে দিন:",
+    parse_mode="HTML"
+)
 
 # ============================================
 # --- MAIN CALLBACK HANDLER ---
