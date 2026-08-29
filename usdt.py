@@ -50,7 +50,7 @@ def keep_alive():
 # ============================================
 # --- CONFIGURATION & SECURITY ---
 # ============================================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8879290215:AAG1Kf6t9Y-wyk68rhF-Cv56COfXsMbPcvo")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8979865542:AAFK_rFUEvobPz9jyHNkiyx-fCNd5cLFeM8")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7833766898"))
 BOT_NAME = "📧 𝒩𝑅 𝑮𝒎𝒂𝒊𝒍 𝑺𝒉𝒐𝒑 𝑩𝑫𝑻 📩"
 DATA_FILE = "nr_gmail_shop_data.json"
