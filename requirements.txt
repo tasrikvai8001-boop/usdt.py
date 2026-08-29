@@ -1,2 +1,4 @@
 pyTelegramBotAPI
+pillow
 flask
+requests
