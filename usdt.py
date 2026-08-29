@@ -50,7 +50,7 @@ def keep_alive():
 # ============================================
 # --- CONFIGURATION & SECURITY ---
 # ============================================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8979865542:AAFK_rFUEvobPz9jyHNkiyx-fCNd5cLFeM8")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8879290215:AAG1Kf6t9Y-wyk68rhF-Cv56COfXsMbPcvo")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7833766898"))
 BOT_NAME = "📧 𝒩𝑅 𝑮𝒎𝒂𝒊𝒍 𝑺𝒉𝒐𝒑 𝑩𝑫𝑻 📩"
 DATA_FILE = "nr_gmail_shop_data.json"
@@ -171,7 +171,9 @@ def get_user(user_id, name="User", username=""):
             if "daily_task_counts" not in data["users"][uid]:
                 data["users"][uid]["daily_task_counts"] = {}
             if today_str not in data["users"][uid]["daily_task_counts"]:
-                data["users"][uid]["daily_task_counts"] = {today_str: {}}
+                data["users"][uid]["daily_task_counts"][today_str] = {}
+            if "temp_data" not in data["users"][uid]:
+                data["users"][uid]["temp_data"] = {}
             save_db(data)
         return data["users"][uid]
 
@@ -188,7 +190,7 @@ def add_transaction(user_id, tx_type, amount, desc):
         data = load_db()
         tx = {
             "tx_id": f"tx_{int(time.time()*1000)}",
-            "user_id": user_id,
+            "user_id": str(user_id),
             "type": tx_type,
             "amount": amount,
             "desc": desc,
@@ -212,7 +214,7 @@ def generate_image_captcha():
 
     try:
         font = ImageFont.truetype("arial.ttf", 30)
-    except:
+    except Exception:
         font = ImageFont.load_default()
 
     draw.text((25, 12), code, fill=(241, 196, 15), font=font)
@@ -399,7 +401,7 @@ def inactive_user_reminder_cron():
                     try:
                         bot.send_message(int(uid), "🔔 <b>আপনার $20 পর্যন্ত বোনাস অপেক্ষা করছে!</b>\nকাজ শুরু করতে এখনই বটে প্রবেশ করুন।", parse_mode="HTML")
                     except Exception as e:
-                        pass
+                        logging.warning(f"Failed to send inactive reminder to {uid}: {e}")
         except Exception as e:
             logging.error(f"Inactive Reminder Error: {e}")
 
@@ -434,13 +436,14 @@ def start_cmd(message):
                 try:
                     bot.send_message(ADMIN_ID, f"⚠️ <b>Rapid Referral Alert!</b>\nUser <code>{ref_id}</code> (@{ref_user.get('username')}) has high rapid referrals!", parse_mode="HTML")
                 except Exception as e:
-                    pass
+                    logging.error(f"Alert send error: {e}")
 
     img_buf, captcha_code = generate_image_captcha()
     update_user(user_id, "state", "verify_captcha_code")
-    data = load_db()
-    data["users"][str(user_id)]["temp_data"]["captcha_ans"] = captcha_code
-    save_db(data)
+    with db_lock:
+        d = load_db()
+        d["users"][str(user_id)]["temp_data"]["captcha_ans"] = captcha_code
+        save_db(d)
 
     bot.send_photo(message.chat.id, img_buf, caption="🤖 <b>SECURITY CAPTCHA CHECK:</b>\n\nছবির ক্যাপচা কোডটি সঠিকভাবে নিচে লিখে দিন:", parse_mode="HTML")
 
@@ -479,12 +482,12 @@ def callback_handler(call):
                     try:
                         bot.send_message(ref_id, f"🎉 <b>New Referral Verification!</b>\nআপনি রেফার বোনাস <b>${bonus}</b> পেয়েছেন!", parse_mode="HTML")
                     except Exception as e:
-                        pass
+                        logging.error(f"Failed to send ref bonus msg: {e}")
 
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except Exception as e:
-            pass
+            logging.warning(f"Delete msg failed: {e}")
 
         bot.send_message(call.message.chat.id, f"✅ <b>ভেরিফিকেশন সফল হয়েছে!</b>\n\n{data['sys_texts']['welcome']}", parse_mode="HTML", reply_markup=get_main_menu(user_id))
 
@@ -537,7 +540,7 @@ def callback_handler(call):
             bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=call.message.reply_markup)
             bot.answer_callback_query(call.id, "✅ রিফ্রেশ করা হয়েছে!")
         except Exception as e:
-            pass
+            logging.warning(f"Wallet refresh edit failed: {e}")
 
     elif call.data == "set_lang_bn":
         update_user(user_id, "lang", "bn")
@@ -557,7 +560,7 @@ def callback_handler(call):
             try:
                 bot.delete_message(call.message.chat.id, call.message.message_id)
             except Exception as e:
-                pass
+                logging.warning(f"Admin close delete error: {e}")
 
         elif act == "force_join":
             markup = InlineKeyboardMarkup(row_width=2)
@@ -750,7 +753,7 @@ def callback_handler(call):
                 try:
                     bot.delete_message(call.message.chat.id, call.message.message_id)
                 except Exception as e:
-                    pass
+                    logging.warning(f"Custom btn del msg error: {e}")
 
     elif call.data.startswith("appr_proof_") or call.data.startswith("rej_proof_"):
         if int(user_id) != ADMIN_ID:
@@ -772,7 +775,7 @@ def callback_handler(call):
                     try:
                         bot.send_message(u_id, f"🎉 আপনার টাস্ক প্রুফ এপ্রুভ হয়েছে! <b>${item['rate']}</b> ব্যালেন্সে যোগ করা হয়েছে।", parse_mode="HTML")
                     except Exception as e:
-                        pass
+                        logging.error(f"Failed to send task approval msg: {e}")
                 else:
                     data["users"][u_id]["rejected_tasks"] += 1
                     data["users"][u_id]["pending_tasks"] = max(0, data["users"][u_id]["pending_tasks"] - 1)
@@ -780,7 +783,7 @@ def callback_handler(call):
                     try:
                         bot.send_message(u_id, "❌ আপনার জমা দেওয়া টাস্ক প্রুফটি বাতিল করা হয়েছে।", parse_mode="HTML")
                     except Exception as e:
-                        pass
+                        logging.error(f"Failed to send task rejection msg: {e}")
                 del data["pending_proofs"][p_key]
                 save_db(data)
 
@@ -808,14 +811,14 @@ def callback_handler(call):
                     try:
                         bot.send_message(u_id, f"🎉 আপনার <b>${gross_amt:.2f}</b> উইথড্র সফলভাবে পেমেন্ট করা হয়েছে!", parse_mode="HTML")
                     except Exception as e:
-                        pass
+                        logging.error(f"Withdrawal notify error: {e}")
 
                     pay_ch = data.get("payment_proof_channel", "")
                     if pay_ch:
                         try:
                             bot.send_message(pay_ch, f"🎉 <b>New Payment Paid Out!</b>\n\n👤 User: <code>{u_id}</code>\n💳 Wallet: <code>{item['wallet']}</code>\n💰 Amount: <b>${gross_amt:.2f} USDT</b>\n⚡ Status: Approved ✅", parse_mode="HTML")
                         except Exception as e:
-                            pass
+                            logging.error(f"Payment proof channel error: {e}")
                 else:
                     item["status"] = "rejected"
                     data["users"][u_id]["balance"] += gross_amt
@@ -824,7 +827,7 @@ def callback_handler(call):
                     try:
                         bot.send_message(u_id, f"❌ আপনার <b>${gross_amt:.2f}</b> উইথড্র বাতিল করা হয়েছে এবং ব্যালেন্স রিফান্ড করা হয়েছে।", parse_mode="HTML")
                     except Exception as e:
-                        pass
+                        logging.error(f"Refund notify error: {e}")
                 save_db(data)
 
 # ============================================
@@ -845,11 +848,12 @@ def handle_text_messages(message):
 
     user = get_user(user_id, message.from_user.first_name, message.from_user.username or "")
     state = user.get("state")
+    txt = message.text.strip() if message.text else ""
 
-    # Captcha Code Verification Flow
+    # Initial Start Captcha Code Verification Flow
     if state == "verify_captcha_code":
         c_ans = user.get("temp_data", {}).get("captcha_ans", "")
-        if message.text and message.text.strip().upper() == c_ans.upper():
+        if txt and c_ans and txt.upper() == c_ans.upper():
             update_user(user_id, "state", None)
             with db_lock:
                 d = load_db()
@@ -872,27 +876,49 @@ def handle_text_messages(message):
         bot.send_message(message.chat.id, "⚠️ <b>আপনি আমাদের চ্যানেল থেকে লিভ নিয়েছেন! কাজ চালিয়ে যেতে আবার জয়েন করুন:</b>", parse_mode="HTML", reply_markup=get_force_join_markup(left))
         return
 
-    txt = message.text.strip() if message.text else ""
-
-    # Captcha Earning Handler
+    # ==================== CAPTCHA EARNING TASK AUDITED FLOW ====================
     if state == "user_solving_earning_captcha":
-        ans = user.get("temp_data", {}).get("earn_captcha_ans", "")
-        if txt.upper() == ans.upper():
-            c_rate = data["tasks"]["captcha"]["rate"]
+        # Atomically fetch and remove stored answer to prevent duplicate submissions
+        with db_lock:
+            d = load_db()
+            saved_ans = d["users"][str(user_id)].get("temp_data", {}).pop("earn_captcha_ans", None)
+            d["users"][str(user_id)]["state"] = None
+            save_db(d)
+
+        c_rate = data["tasks"].get("captcha", {}).get("rate", 0.02)
+        c_limit = data["tasks"].get("captcha", {}).get("limit", 20)
+        today_str = datetime.now().strftime("%Y-%m-%d")
+
+        if saved_ans and txt.upper() == saved_ans.upper():
             with db_lock:
                 d = load_db()
-                d["users"][str(user_id)]["balance"] += c_rate
-                today_str = datetime.now().strftime("%Y-%m-%d")
-                counts = d["users"][str(user_id)]["daily_task_counts"].get(today_str, {})
-                counts["captcha"] = counts.get("captcha", 0) + 1
-                d["users"][str(user_id)]["daily_task_counts"][today_str] = counts
-                save_db(d)
-                add_transaction(user_id, "captcha_earn", c_rate, "Solved Captcha Earn")
-            update_user(user_id, "state", None)
-            bot.send_message(message.chat.id, f"✅ <b>সঠিক ক্যাপচা!</b> আপনার ওয়ালেটে <b>${c_rate}</b> যোগ করা হয়েছে।", parse_mode="HTML", reply_markup=get_main_menu(user_id))
+                current_counts = d["users"][str(user_id)].get("daily_task_counts", {}).get(today_str, {})
+                c_done = current_counts.get("captcha", 0) + 1
+                
+                # Check limit again for security
+                if c_done <= c_limit:
+                    d["users"][str(user_id)]["balance"] += c_rate
+                    if "daily_task_counts" not in d["users"][str(user_id)]:
+                        d["users"][str(user_id)]["daily_task_counts"] = {}
+                    if today_str not in d["users"][str(user_id)]["daily_task_counts"]:
+                        d["users"][str(user_id)]["daily_task_counts"][today_str] = {}
+                    d["users"][str(user_id)]["daily_task_counts"][today_str]["captcha"] = c_done
+                    new_bal = d["users"][str(user_id)]["balance"]
+                    save_db(d)
+                    add_transaction(user_id, "captcha_earn", c_rate, "Solved Captcha Reward")
+
+                    success_msg = (
+                        f"🎉 <b>CAPTCHA COMPLETED!</b>\n\n"
+                        f"✅ <b>সঠিক উত্তর!</b>\n"
+                        f"💰 <b>Reward:</b> ${c_rate:.2f}\n"
+                        f"💳 <b>আপনার নতুন Balance:</b> ${new_bal:.2f}\n"
+                        f"📊 <b>আজকের কাজ:</b> {c_done}/{c_limit}"
+                    )
+                    bot.send_message(message.chat.id, success_msg, parse_mode="HTML", reply_markup=get_main_menu(user_id))
+                else:
+                    bot.send_message(message.chat.id, "❌ <b>আজকের ক্যাপচা সীমা শেষ হয়ে গেছে!</b>", parse_mode="HTML", reply_markup=get_main_menu(user_id))
         else:
-            update_user(user_id, "state", None)
-            bot.send_message(message.chat.id, "❌ <b>ভুল কোড!</b> পুনরায় চেষ্টার জন্য বাটন প্রেস করুন।", parse_mode="HTML", reply_markup=get_main_menu(user_id))
+            bot.send_message(message.chat.id, "❌ <b>ভুল উত্তর!</b> কোনো রিওয়ার্ড দেওয়া হয়নি। পুনরায় চেষ্টার জন্য বাটন চাপুন।", parse_mode="HTML", reply_markup=get_main_menu(user_id))
         return
 
     # ==================== USER FLOW STATES ====================
@@ -925,7 +951,7 @@ def handle_text_messages(message):
             try:
                 bot.delete_message(message.chat.id, msg_proc.message_id)
             except Exception as e:
-                pass
+                logging.warning(f"Delete msg error: {e}")
 
             wallet = user["temp_data"].get("wallet", "")
             with db_lock:
@@ -977,7 +1003,7 @@ def handle_text_messages(message):
         try:
             bot.send_message(ADMIN_ID, f"📩 <b>New Support Ticket!</b>\nUser: <code>{user_id}</code> (@{user.get('username')})\nMessage: {txt}", parse_mode="HTML")
         except Exception as e:
-            pass
+            logging.error(f"Support ticket notify error: {e}")
         bot.send_message(message.chat.id, "✅ <b>আপনার সাপোর্ট টিকিট এডমিনের কাছে পাঠানো হয়েছে!</b>", parse_mode="HTML", reply_markup=get_main_menu(user_id))
         return
 
@@ -1030,7 +1056,7 @@ def handle_text_messages(message):
                     data["ref_bonus_verify"] = v
                     save_db(data)
                 bot.send_message(message.chat.id, f"✅ নতুন রেফার বোনাস: ${v}")
-            except:
+            except Exception:
                 bot.send_message(message.chat.id, "❌ সংখ্যা লিখুন।")
             update_user(user_id, "state", None)
             return
@@ -1043,7 +1069,7 @@ def handle_text_messages(message):
                     data["min_withdraw"] = v
                     save_db(data)
                 bot.send_message(message.chat.id, f"✅ মিনিমাম উইথড্র: ${v}")
-            except:
+            except Exception:
                 bot.send_message(message.chat.id, "❌ সংখ্যা লিখুন।")
             update_user(user_id, "state", None)
             return
@@ -1056,7 +1082,7 @@ def handle_text_messages(message):
                     data["withdraw_fee_percent"] = v
                     save_db(data)
                 bot.send_message(message.chat.id, f"✅ উইথড্র ফি: {v}%")
-            except:
+            except Exception:
                 bot.send_message(message.chat.id, "❌ সংখ্যা লিখুন।")
             update_user(user_id, "state", None)
             return
@@ -1069,7 +1095,7 @@ def handle_text_messages(message):
                     data["tasks"]["shortlink"] = {"link": lnk, "rate": float(rate), "limit": int(lim), "desc": desc}
                     save_db(data)
                 bot.send_message(message.chat.id, "✅ Shortlink Task Updated!")
-            except:
+            except Exception:
                 bot.send_message(message.chat.id, "❌ ফরম্যাট: `LINK RATE LIMIT DESC`", parse_mode="Markdown")
             update_user(user_id, "state", None)
             return
@@ -1082,7 +1108,7 @@ def handle_text_messages(message):
                     data["tasks"]["captcha"] = {"rate": float(rate), "limit": int(lim), "desc": desc}
                     save_db(data)
                 bot.send_message(message.chat.id, "✅ Captcha Task Updated!")
-            except:
+            except Exception:
                 bot.send_message(message.chat.id, "❌ ফরম্যাট: `RATE LIMIT DESC`", parse_mode="Markdown")
             update_user(user_id, "state", None)
             return
@@ -1095,7 +1121,7 @@ def handle_text_messages(message):
                     data["tasks"]["micro_task"] = {"link": lnk, "rate": float(rate), "limit": int(lim), "req": req, "desc": "Micro Task"}
                     save_db(data)
                 bot.send_message(message.chat.id, "✅ Micro Task Updated!")
-            except:
+            except Exception:
                 bot.send_message(message.chat.id, "❌ ফরম্যাট: `LINK RATE LIMIT REQ`", parse_mode="Markdown")
             update_user(user_id, "state", None)
             return
@@ -1108,7 +1134,7 @@ def handle_text_messages(message):
                     data["tasks"]["survey"] = {"link": lnk, "rate": float(rate), "desc": desc}
                     save_db(data)
                 bot.send_message(message.chat.id, "✅ Survey & Apps Task Updated!")
-            except:
+            except Exception:
                 bot.send_message(message.chat.id, "❌ ফরম্যাট: `LINK RATE DESC`", parse_mode="Markdown")
             update_user(user_id, "state", None)
             return
@@ -1141,7 +1167,7 @@ def handle_text_messages(message):
                         try:
                             bot.pin_chat_message(int(uid), m.message_id)
                         except Exception as e:
-                            pass
+                            logging.warning(f"Pin message failed: {e}")
                     succ += 1
                 except Exception as e:
                     fail += 1
@@ -1164,8 +1190,8 @@ def handle_text_messages(message):
                         try:
                             bot.send_message(int(u_target), f"🎉 Admin added ${v_amt} to your balance!")
                         except Exception as e:
-                            pass
-            except:
+                            logging.error(f"Notify user failed: {e}")
+            except Exception:
                 bot.send_message(message.chat.id, "❌ ফরম্যাট: `USER_ID AMOUNT`", parse_mode="Markdown")
             update_user(user_id, "state", None)
             return
@@ -1181,7 +1207,7 @@ def handle_text_messages(message):
                         add_transaction(u_target, "admin_cut", -v_amt, "Cut balance by Admin")
                         save_db(data)
                         bot.send_message(message.chat.id, f"✅ Cut ${v_amt} from {u_target}")
-            except:
+            except Exception:
                 bot.send_message(message.chat.id, "❌ ফরম্যাট: `USER_ID AMOUNT`", parse_mode="Markdown")
             update_user(user_id, "state", None)
             return
@@ -1207,7 +1233,7 @@ def handle_text_messages(message):
                         data["unlock_conditions"][t_key]["ref"] = int(ref_c)
                         save_db(data)
                         bot.send_message(message.chat.id, f"✅ Unlock condition for {t_key} set to {ref_c} refs!")
-            except:
+            except Exception:
                 bot.send_message(message.chat.id, "❌ ফরম্যাট: `TASK_KEY REF_COUNT`", parse_mode="Markdown")
             update_user(user_id, "state", None)
             return
@@ -1220,7 +1246,7 @@ def handle_text_messages(message):
                     data["leaderboard_prizes"] = [float(p1), float(p2), float(p3)]
                     save_db(data)
                 bot.send_message(message.chat.id, "✅ Leaderboard prizes updated!")
-            except:
+            except Exception:
                 bot.send_message(message.chat.id, "❌ ফরম্যাট: `PRIZE_1 PRIZE_2 PRIZE_3`", parse_mode="Markdown")
             update_user(user_id, "state", None)
             return
@@ -1234,7 +1260,7 @@ def handle_text_messages(message):
                         data["sys_texts"][t_type] = t_val
                         save_db(data)
                         bot.send_message(message.chat.id, f"✅ Text '{t_type}' updated!")
-            except:
+            except Exception:
                 bot.send_message(message.chat.id, "❌ ফরম্যাট: `TYPE TEXT`", parse_mode="Markdown")
             update_user(user_id, "state", None)
             return
@@ -1247,7 +1273,7 @@ def handle_text_messages(message):
                     data["daily_bonus_amount"] = v
                     save_db(data)
                 bot.send_message(message.chat.id, f"✅ Daily Bonus set to ${v}")
-            except:
+            except Exception:
                 bot.send_message(message.chat.id, "❌ সংখ্যা লিখুন।")
             update_user(user_id, "state", None)
             return
