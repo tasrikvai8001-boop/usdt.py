@@ -383,58 +383,22 @@ def start_cmd(message):
 
     user = get_user(user_id, message.from_user.first_name, message.from_user.username or "")
 
-        args = message.text.split()
-
+    args = message.text.split()
     if len(args) > 1 and user.get("referred_by") is None:
         ref_id = args[1]
-
         if ref_id != str(user_id) and ref_id in data["users"]:
             update_user(user_id, "referred_by", ref_id)
             ref_user = data["users"][ref_id]
-
             if ref_user.get("referrals", 0) > 15:
-                bot.send_message(
-                    ADMIN_ID,
-                    f"⚠️ <b>Rapid Referral Alert!</b>\n"
-                    f"User <code>{ref_id}</code> "
-                    f"(@{ref_user.get('username')}) has high rapid referrals!",
-                    parse_mode="HTML"
-                )
+                bot.send_message(ADMIN_ID, f"⚠️ <b>Rapid Referral Alert!</b>\nUser <code>{ref_id}</code> (@{ref_user.get('username')}) has high rapid referrals!", parse_mode="HTML")
 
     img_buf, captcha_code = generate_image_captcha()
-
+    update_user(user_id, "state", "verify_captcha_code")
     data = load_db()
-    uid = str(user_id)
-
-    data["users"][uid]["state"] = "verify_captcha_code"
-    data["users"][uid]["temp_data"]["captcha_ans"] = captcha_code
-
+    data["users"][str(user_id)]["temp_data"]["captcha_ans"] = captcha_code
     save_db(data)
 
-    bot.send_photo(
-        message.chat.id,
-        img_buf,
-        caption="🤖 <b>SECURITY CAPTCHA CHECK:</b>\n\nছবির ক্যাপচা কোডটি সঠিকভাবে নিচে লিখে দিন:",
-        parse_mode="HTML"
-    )
-
-# এখানে কোনো স্পেস থাকবে না
-img_buf, captcha_code = generate_image_captcha()
-
-data = load_db()
-uid = str(user_id)
-
-data["users"][uid]["state"] = "verify_captcha_code"
-data["users"][uid]["temp_data"]["captcha_ans"] = captcha_code
-
-save_db(data)
-
-bot.send_photo(
-    message.chat.id,
-    img_buf,
-    caption="🤖 <b>SECURITY CAPTCHA CHECK:</b>\n\nছবির ক্যাপচা কোডটি সঠিকভাবে নিচে লিখে দিন:",
-    parse_mode="HTML"
-)
+    bot.send_photo(message.chat.id, img_buf, caption="🤖 <b>SECURITY CAPTCHA CHECK:</b>\n\nছবির ক্যাপচা কোডটি সঠিকভাবে নিচে লিখে দিন:", parse_mode="HTML")
 
 # ============================================
 # --- MAIN CALLBACK HANDLER ---
@@ -786,21 +750,41 @@ def handle_text_messages(message):
     user = get_user(user_id, message.from_user.first_name, message.from_user.username or "")
     state = user.get("state")
 
-    # Captcha Code Verification Flow
-    if state == "verify_captcha_code":
-        c_ans = user.get("temp_data", {}).get("captcha_ans", "")
-        if message.text and message.text.strip().upper() == c_ans:
-            update_user(user_id, "state", None)
-            
-            left = check_force_join(user_id)
-            if left:
-                msg = f"👋 <b>Welcome to {BOT_NAME}!</b>\n\nবটটি ব্যবহার করতে নিচের চ্যানেলগুলোতে জয়েন করুন এবং <b>Verify Now</b> বাটনে ক্লিক করুন:"
-                bot.send_message(message.chat.id, msg, parse_mode="HTML", reply_markup=get_force_join_markup(left))
-            else:
-                bot.send_message(message.chat.id, "✅ <b>ক্যাপচা সফল হয়েছে!</b>", parse_mode="HTML", reply_markup=get_main_menu(user_id))
-        else:
-            bot.send_message(message.chat.id, "❌ <b>ভুল ক্যাপচা কোড!</b> পুনরায় চেষ্টা করতে /start চাপুন।", parse_mode="HTML")
-        return
+    # ==================== CAPTCHA VERIFICATION ====================
+if state == "verify_captcha_code":
+    c_ans = user.get("temp_data", {}).get("captcha_ans", "")
+
+    if message.text and message.text.strip().upper() == c_ans.upper():
+
+        # CAPTCHA verified
+        update_user(user_id, "state", None)
+
+        # Clear captcha answer
+        data = load_db()
+        data["users"][str(user_id)]["temp_data"].pop("captcha_ans", None)
+        save_db(data)
+
+        # Send success message + start bot
+        bot.send_message(
+            message.chat.id,
+            "✅ <b>CAPTCHA Verification Successful!</b>\n\n"
+            "🎉 <b>অভিনন্দন!</b> আপনার ভেরিফিকেশন সফল হয়েছে।\n\n"
+            "🚀 এখন আপনি আমাদের বটের সকল ফিচার ব্যবহার করতে পারবেন।\n\n"
+            "👇 নিচের মেনু থেকে আপনার প্রয়োজনীয় অপশন নির্বাচন করুন:",
+            parse_mode="HTML",
+            reply_markup=get_main_menu(user_id)
+        )
+
+    else:
+        bot.send_message(
+            message.chat.id,
+            "❌ <b>ভুল CAPTCHA Code!</b>\n\n"
+            "সঠিক কোডটি লিখে আবার চেষ্টা করুন।\n"
+            "নতুন CAPTCHA পেতে /start চাপুন।",
+            parse_mode="HTML"
+        )
+
+    return
 
     # Real-time Enforcement Check
     left = check_force_join(user_id)
