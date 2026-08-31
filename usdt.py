@@ -64,7 +64,7 @@ def keep_alive():
 # ------------------------------------------------------------------------------
 # CONFIGURATION & ENVIRONMENT SECURITY
 # ------------------------------------------------------------------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8879290215:AAG1Kf6t9Y-wyk68rhF-Cv56COfXsMbPcvo")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8979865542:AAHvj7S0mk55JTyEi94s6Ul4kpaxJiUomvU")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID", "7833766898")
 
 try:
