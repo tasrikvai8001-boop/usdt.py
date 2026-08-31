@@ -1,7 +1,5 @@
-import importlib.util
-import subprocess
-import sys
 import os
+import sys
 import time
 import json
 import random
@@ -9,29 +7,45 @@ import string
 import threading
 import re
 import logging
-from datetime import datetime, timedelta
+import tempfile
+import io
+from datetime import datetime, timedelta, timezone
 
-# --- AUTOMATIC DEPENDENCY CHECK ---
-for pkg in ["flask", "pyTelegramBotAPI", "pillow", "requests"]:
-    mod = "telebot" if pkg == "pyTelegramBotAPI" else ("PIL" if pkg == "pillow" else pkg)
+# --- AUTOMATIC DEPENDENCY MANAGEMENT ---
+import importlib.util
+import subprocess
+
+REQUIRED_PACKAGES = {
+    "flask": "flask",
+    "pyTelegramBotAPI": "telebot",
+    "pillow": "PIL",
+    "requests": "requests"
+}
+
+for pkg, mod in REQUIRED_PACKAGES.items():
     if importlib.util.find_spec(mod) is None:
         try:
             subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
         except Exception as e:
-            print(f"Failed to install {pkg}: {e}")
+            print(f"Failed to install package {pkg}: {e}")
 
 from flask import Flask
 import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.apihelper import ApiTelegramException
 from PIL import Image, ImageDraw, ImageFont
-import io
 
-# Setup Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# ------------------------------------------------------------------------------
+# LOGGING SETUP
+# ------------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
-# ============================================
-# --- WEB SERVER FOR RENDER (KEEP ALIVE) ---
-# ============================================
+# ------------------------------------------------------------------------------
+# RENDER KEEP-ALIVE WEB SERVER
+# ------------------------------------------------------------------------------
 app = Flask('')
 
 @app.route('/')
@@ -47,97 +61,133 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# ============================================
-# --- CONFIGURATION & SECURITY ---
-# ============================================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8979865542:AAFK_rFUEvobPz9jyHNkiyx-fCNd5cLFeM8")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "7833766898"))
+# ------------------------------------------------------------------------------
+# CONFIGURATION & ENVIRONMENT SECURITY
+# ------------------------------------------------------------------------------
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8879290215:AAG1Kf6t9Y-wyk68rhF-Cv56COfXsMbPcvo")
+ADMIN_ID_RAW = os.getenv("ADMIN_ID", "7833766898")
+
+try:
+    ADMIN_ID = int(ADMIN_ID_RAW)
+except ValueError:
+    ADMIN_ID = 0
+
 BOT_NAME = "📧 𝒩𝑅 𝑮𝒎𝒂𝒊𝒍 𝑺𝒉𝒐𝒑 𝑩𝑫𝑻 📩"
 DATA_FILE = "nr_gmail_shop_data.json"
 
 if not BOT_TOKEN:
-    logging.error("BOT_TOKEN is missing!")
+    logging.critical("FATAL: BOT_TOKEN is missing from environment variables!")
     sys.exit("Error: BOT_TOKEN Environment Variable is required.")
 
-bot = telebot.TeleBot(BOT_TOKEN, num_threads=50)
+bot = telebot.TeleBot(BOT_TOKEN, num_threads=30)
 db_lock = threading.RLock()
 
-# ============================================
-# --- DATABASE MANAGEMENT ---
-# ============================================
+# ------------------------------------------------------------------------------
+# TIMEZONE HELPER (Asia/Dhaka UTC+6)
+# ------------------------------------------------------------------------------
+DHAKA_TZ = timezone(timedelta(hours=6))
+
+def get_dhaka_now():
+    return datetime.now(DHAKA_TZ)
+
+def get_dhaka_date_str():
+    return get_dhaka_now().strftime("%Y-%m-%d")
+
+# ------------------------------------------------------------------------------
+# ATOMIC DATABASE SYSTEM
+# ------------------------------------------------------------------------------
+def get_default_db():
+    return {
+        "users": {},
+        "banned_users": [],
+        "force_channels": [],
+        "ref_bonus_verify": 0.40,
+        "min_withdraw": 5.0,
+        "withdraw_min_ref": 2,
+        "withdraw_fee_percent": 1.0,
+        "daily_bonus_amount": 0.10,
+        "leaderboard_prizes": [10.0, 4.0, 1.0],
+        "leaderboard_history": [],
+        "maintenance_mode": False,
+        "anti_fraud_enabled": True,
+        "multi_acc_detection": True,
+        "auto_payment_api": "",
+        "payment_proof_channel": "",
+        "cooldown_time": 10,
+        "custom_buttons": {},
+        "sys_texts": {
+            "welcome": "Welcome back to our bot! Choose an option below:",
+            "refer_rules": "Refer your friends and earn instant rewards once they verify!",
+            "help_text": "If you face any issues, send your query here for support."
+        },
+        "tasks": {
+            "shortlink": {"desc": "Complete Shortlink Task", "link": "https://example.com/short", "rate": 0.05, "limit": 10},
+            "captcha": {"desc": "Solve Images or Text Captchas", "rate": 0.02, "limit": 20},
+            "micro_task": {"desc": "Join Channel & Submit Screenshot Proof", "link": "https://t.me/example", "req": "Send Screenshot", "rate": 0.10, "limit": 5},
+            "survey": {"desc": "Complete App Install or Survey", "link": "https://example.com/survey", "rate": 0.50, "limit": 2},
+            "watch_ads": {"desc": "Watch Video Ads", "link": "https://example.com/ads", "rate": 0.01, "limit": 15}
+        },
+        "unlock_conditions": {
+            "task_earn": {"ref": 2, "tasks": 0},
+            "watch_ads": {"ref": 3, "tasks": 0},
+            "captcha_earn": {"ref": 5, "tasks": 0},
+            "survey_apps": {"ref": 2, "tasks": 0}
+        },
+        "pending_proofs": {},
+        "pending_withdraws": {},
+        "ip_tracker": {},
+        "transactions": []
+    }
+
 def load_db():
     with db_lock:
-        default_db = {
-            "users": {},
-            "banned_users": [],
-            "force_channels": [],
-            "ref_bonus_verify": 0.40,
-            "min_withdraw": 5.0,
-            "withdraw_min_ref": 2,
-            "withdraw_fee_percent": 1.0,
-            "daily_bonus_amount": 0.10,
-            "leaderboard_prizes": [10.0, 4.0, 1.0],
-            "leaderboard_history": [],
-            "maintenance_mode": False,
-            "anti_fraud_enabled": True,
-            "multi_acc_detection": True,
-            "auto_payment_api": "",
-            "payment_proof_channel": "",
-            "cooldown_time": 10,
-            "custom_buttons": {},
-            "sys_texts": {
-                "welcome": "Welcome back to our bot! Choose an option below:",
-                "refer_rules": "Refer your friends and earn instant rewards once they verify!",
-                "help_text": "If you face any issues, send your query here for support."
-            },
-            "tasks": {
-                "shortlink": {"desc": "Complete Shortlink Task", "link": "https://example.com/short", "rate": 0.05, "limit": 10},
-                "captcha": {"desc": "Solve Images or Text Captchas", "rate": 0.02, "limit": 20},
-                "micro_task": {"desc": "Join Channel & Submit Screenshot Proof", "link": "https://t.me/example", "req": "Send Screenshot", "rate": 0.10, "limit": 5},
-                "survey": {"desc": "Complete App Install or Survey", "link": "https://example.com/survey", "rate": 0.50, "limit": 2},
-                "watch_ads": {"desc": "Watch Video Ads", "link": "https://example.com/ads", "rate": 0.01, "limit": 15}
-            },
-            "unlock_conditions": {
-                "task_earn": {"ref": 2, "tasks": 0},
-                "watch_ads": {"ref": 3, "tasks": 0},
-                "captcha_earn": {"ref": 5, "tasks": 0},
-                "survey_apps": {"ref": 2, "tasks": 0}
-            },
-            "pending_proofs": {},
-            "pending_withdraws": {},
-            "ip_tracker": {},
-            "transactions": []
-        }
-
+        default_db = get_default_db()
         if not os.path.exists(DATA_FILE):
-            with open(DATA_FILE, "w", encoding='utf-8') as f:
-                json.dump(default_db, f, indent=4, ensure_ascii=False)
+            save_db(default_db)
             return default_db
 
         try:
             with open(DATA_FILE, "r", encoding='utf-8') as f:
                 data = json.load(f)
-                for key, val in default_db.items():
-                    if key not in data:
-                        data[key] = val
-                return data
+                
+            # Database Migration / Key Filling
+            for key, val in default_db.items():
+                if key not in data:
+                    data[key] = val
+            if "sys_texts" in data:
+                for k, v in default_db["sys_texts"].items():
+                    if k not in data["sys_texts"]:
+                        data["sys_texts"][k] = v
+            if "tasks" in data:
+                for k, v in default_db["tasks"].items():
+                    if k not in data["tasks"]:
+                        data["tasks"][k] = v
+            if "unlock_conditions" in data:
+                for k, v in default_db["unlock_conditions"].items():
+                    if k not in data["unlock_conditions"]:
+                        data["unlock_conditions"][k] = v
+            return data
         except Exception as e:
-            logging.error(f"Error loading DB: {e}")
+            logging.error(f"Error loading DB, creating default copy: {e}")
+            save_db(default_db)
             return default_db
 
 def save_db(data):
     with db_lock:
         try:
-            with open(DATA_FILE, "w", encoding='utf-8') as f:
-                json.dump(data, f, indent=4, ensure_ascii=False)
+            dir_name = os.path.dirname(os.path.abspath(DATA_FILE))
+            with tempfile.NamedTemporaryFile('w', dir=dir_name, delete=False, encoding='utf-8') as tf:
+                json.dump(data, tf, indent=4, ensure_ascii=False)
+                temp_name = tf.name
+            os.replace(temp_name, DATA_FILE)
         except Exception as e:
-            logging.error(f"Database Save Error: {e}")
+            logging.error(f"Critical Database Save Failure: {e}")
 
 def get_user(user_id, name="User", username=""):
     with db_lock:
         data = load_db()
         uid = str(user_id)
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = get_dhaka_date_str()
 
         if uid not in data["users"]:
             data["users"][uid] = {
@@ -166,14 +216,14 @@ def get_user(user_id, name="User", username=""):
             save_db(data)
         else:
             data["users"][uid]["last_active"] = time.time()
-            data["users"][uid]["name"] = name
-            data["users"][uid]["username"] = username
+            if name:
+                data["users"][uid]["name"] = name
+            if username:
+                data["users"][uid]["username"] = username
             if "daily_task_counts" not in data["users"][uid]:
                 data["users"][uid]["daily_task_counts"] = {}
             if today_str not in data["users"][uid]["daily_task_counts"]:
                 data["users"][uid]["daily_task_counts"][today_str] = {}
-            if "temp_data" not in data["users"][uid]:
-                data["users"][uid]["temp_data"] = {}
             save_db(data)
         return data["users"][uid]
 
@@ -188,20 +238,23 @@ def update_user(user_id, key, val):
 def add_transaction(user_id, tx_type, amount, desc):
     with db_lock:
         data = load_db()
+        uid = str(user_id)
+        current_bal = data["users"].get(uid, {}).get("balance", 0.0)
         tx = {
-            "tx_id": f"tx_{int(time.time()*1000)}",
-            "user_id": str(user_id),
+            "tx_id": f"tx_{int(time.time()*1000)}_{random.randint(100,999)}",
+            "user_id": user_id,
             "type": tx_type,
             "amount": amount,
+            "balance_after": current_bal,
             "desc": desc,
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+            "timestamp": get_dhaka_now().strftime("%Y-%m-%d %H:%M:%S")
         }
         data["transactions"].append(tx)
         save_db(data)
 
-# ============================================
-# --- IMAGE CAPTCHA GENERATOR ---
-# ============================================
+# ------------------------------------------------------------------------------
+# CAPTCHA GENERATION SYSTEM
+# ------------------------------------------------------------------------------
 def generate_image_captcha():
     code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
     img = Image.new('RGB', (160, 60), color=(28, 40, 51))
@@ -213,19 +266,19 @@ def generate_image_captcha():
         draw.line([(x1, y1), (x2, y2)], fill=(100, 100, 100), width=1)
 
     try:
-        font = ImageFont.truetype("arial.ttf", 30)
+        font = ImageFont.truetype("arial.ttf", 26)
     except Exception:
         font = ImageFont.load_default()
 
-    draw.text((25, 12), code, fill=(241, 196, 15), font=font)
+    draw.text((25, 15), code, fill=(241, 196, 15), font=font)
     buf = io.BytesIO()
     img.save(buf, format='PNG')
     buf.seek(0)
     return buf, code
 
-# ============================================
-# --- FORCE JOIN & LIVE GUARD CHECKER ---
-# ============================================
+# ------------------------------------------------------------------------------
+# FORCE JOIN VERIFIER
+# ------------------------------------------------------------------------------
 def check_force_join(user_id):
     if int(user_id) == ADMIN_ID:
         return []
@@ -236,22 +289,40 @@ def check_force_join(user_id):
             member = bot.get_chat_member(ch, user_id)
             if member.status in ['left', 'kicked']:
                 left_channels.append(ch)
+        except ApiTelegramException as e:
+            logging.warning(f"Telegram API issue for force join check {ch}: {e}")
+            continue
         except Exception as e:
-            logging.warning(f"Could not check force join for channel {ch}: {e}")
+            logging.warning(f"General error checking channel {ch}: {e}")
             continue
     return left_channels
+
+# ------------------------------------------------------------------------------
+# KEYBOARD BUILDERS WITH COLOR COMPATIBILITY WRAPPER
+# ------------------------------------------------------------------------------
+def make_inline_btn(text, callback_data=None, url=None, style=None):
+    kwargs = {"text": text}
+    if callback_data:
+        kwargs["callback_data"] = callback_data
+    if url:
+        kwargs["url"] = url
+        
+    # Apply style safely if framework permits
+    if style:
+        try:
+            return InlineKeyboardButton(style=style, **kwargs)
+        except TypeError:
+            pass
+    return InlineKeyboardButton(**kwargs)
 
 def get_force_join_markup(left_channels):
     markup = InlineKeyboardMarkup(row_width=1)
     for ch in left_channels:
         clean_ch = ch.replace("@", "")
-        markup.add(InlineKeyboardButton(text=f"📢 Join {ch}", url=f"https://t.me/{clean_ch}"))
-    markup.add(InlineKeyboardButton(text="✅ Verify Now", callback_data="verify_join"))
+        markup.add(make_inline_btn(text=f"📢 Join {ch}", url=f"https://t.me/{clean_ch}", style="primary"))
+    markup.add(make_inline_btn(text="✅ Verify Now", callback_data="verify_join", style="success"))
     return markup
 
-# ============================================
-# --- KEYBOARDS & MENUS ---
-# ============================================
 TXT_WALLET = "💰 𝑴𝒚 𝑾𝒂𝒍𝒍𝒆𝒕"
 TXT_REFER = "⚡ 𝑰𝒏𝒔𝒕𝒂𝒏𝒕 𝑹𝒆𝒇𝒆𝒓"
 TXT_DAILY_BONUS = "🎁 𝑫𝒂𝒊𝒍𝒚 𝑩𝒐𝒏𝒖𝒔"
@@ -288,73 +359,73 @@ def get_my_works_menu():
 def get_admin_inline_menu():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("📢 Set Force Join", callback_data="adm_force_join"),
-        InlineKeyboardButton("🎁 Set Ref Bonus", callback_data="adm_set_ref_bonus")
+        make_inline_btn("📢 Set Force Join", callback_data="adm_force_join", style="primary"),
+        make_inline_btn("🎁 Set Ref Bonus", callback_data="adm_set_ref_bonus", style="primary")
     )
     markup.add(
-        InlineKeyboardButton("💳 Set Min Withdraw", callback_data="adm_set_min_withdraw"),
-        InlineKeyboardButton("💸 Set Withdraw Fee", callback_data="adm_set_fee")
+        make_inline_btn("💳 Set Min Withdraw", callback_data="adm_set_min_withdraw", style="primary"),
+        make_inline_btn("💸 Set Withdraw Fee", callback_data="adm_set_fee", style="primary")
     )
     markup.add(
-        InlineKeyboardButton("🌐 Set Shortlink", callback_data="adm_set_shortlink"),
-        InlineKeyboardButton("⌨️ Set Captcha Earn", callback_data="adm_set_captcha_earn")
+        make_inline_btn("🌐 Set Shortlink", callback_data="adm_set_shortlink", style="primary"),
+        make_inline_btn("⌨️ Set Captcha Earn", callback_data="adm_set_captcha_earn", style="primary")
     )
     markup.add(
-        InlineKeyboardButton("📲 Set Micro-Tasks", callback_data="adm_set_micro_tasks"),
-        InlineKeyboardButton("📋 Set Survey & Apps", callback_data="adm_set_survey")
+        make_inline_btn("📲 Set Micro-Tasks", callback_data="adm_set_micro_tasks", style="primary"),
+        make_inline_btn("📋 Set Survey & Apps", callback_data="adm_set_survey", style="primary")
     )
     markup.add(
-        InlineKeyboardButton("📥 Pending Task Proofs", callback_data="adm_pending_proofs"),
-        InlineKeyboardButton("💸 Pending Withdrawals", callback_data="adm_pending_withdraws")
+        make_inline_btn("📥 Pending Task Proofs", callback_data="adm_pending_proofs", style="primary"),
+        make_inline_btn("💸 Pending Withdrawals", callback_data="adm_pending_withdraws", style="primary")
     )
     markup.add(
-        InlineKeyboardButton("🚫 Ban/Unban User", callback_data="adm_ban_unban"),
-        InlineKeyboardButton("🛡️ Anti-Fraud Toggle", callback_data="adm_toggle_fraud")
+        make_inline_btn("🚫 Ban/Unban User", callback_data="adm_ban_unban", style="danger"),
+        make_inline_btn("🛡️ Anti-Fraud Toggle", callback_data="adm_toggle_fraud", style="primary")
     )
     markup.add(
-        InlineKeyboardButton("📢 Smart Broadcast", callback_data="adm_broadcast_menu"),
-        InlineKeyboardButton("➕ Add Balance", callback_data="adm_add_bal")
+        make_inline_btn("📢 Smart Broadcast", callback_data="adm_broadcast_menu", style="primary"),
+        make_inline_btn("➕ Add Balance", callback_data="adm_add_bal", style="success")
     )
     markup.add(
-        InlineKeyboardButton("➖ Cut Balance", callback_data="adm_cut_bal"),
-        InlineKeyboardButton("📊 Live Dashboard", callback_data="adm_stats")
+        make_inline_btn("➖ Cut Balance", callback_data="adm_cut_bal", style="danger"),
+        make_inline_btn("📊 Live Dashboard", callback_data="adm_stats", style="primary")
     )
     markup.add(
-        InlineKeyboardButton("🔴 Maintenance Mode", callback_data="adm_maint"),
-        InlineKeyboardButton("📁 Database Export", callback_data="adm_export")
+        make_inline_btn("🔴 Maintenance Mode", callback_data="adm_maint", style="danger"),
+        make_inline_btn("📁 Database Export", callback_data="adm_export", style="primary")
     )
     markup.add(
-        InlineKeyboardButton("➕ Add Custom Btn", callback_data="adm_add_cbtn"),
-        InlineKeyboardButton("🗑️ Del Custom Btn", callback_data="adm_del_cbtn")
+        make_inline_btn("➕ Add Custom Btn", callback_data="adm_add_cbtn", style="success"),
+        make_inline_btn("🗑️ Del Custom Btn", callback_data="adm_del_cbtn", style="danger")
     )
     markup.add(
-        InlineKeyboardButton("🔒 Unlock Conditions", callback_data="adm_unlock_cond"),
-        InlineKeyboardButton("🏆 Set Leaderboard Prize", callback_data="adm_set_prizes")
+        make_inline_btn("🔒 Unlock Conditions", callback_data="adm_unlock_cond", style="primary"),
+        make_inline_btn("🏆 Set Leaderboard Prize", callback_data="adm_set_prizes", style="primary")
     )
     markup.add(
-        InlineKeyboardButton("📝 Edit Text Messages", callback_data="adm_edit_texts"),
-        InlineKeyboardButton("🎁 Set Daily Bonus Range", callback_data="adm_set_daily_range")
+        make_inline_btn("📝 Edit Text Messages", callback_data="adm_edit_texts", style="primary"),
+        make_inline_btn("🎁 Set Daily Bonus Range", callback_data="adm_set_daily_range", style="primary")
     )
     markup.add(
-        InlineKeyboardButton("🤖 Auto Payment API", callback_data="adm_auto_pay"),
-        InlineKeyboardButton("📢 Payment Channel", callback_data="adm_pay_channel")
+        make_inline_btn("🤖 Auto Payment API", callback_data="adm_auto_pay", style="primary"),
+        make_inline_btn("📢 Payment Channel", callback_data="adm_pay_channel", style="primary")
     )
     markup.add(
-        InlineKeyboardButton("🗑️ Delete Active Task", callback_data="adm_del_task"),
-        InlineKeyboardButton("🔄 Restart Server", callback_data="adm_restart")
+        make_inline_btn("🗑️ Delete Active Task", callback_data="adm_del_task", style="danger"),
+        make_inline_btn("🔄 Restart Server", callback_data="adm_restart", style="danger")
     )
     markup.add(
-        InlineKeyboardButton("❌ Close Panel", callback_data="adm_close")
+        make_inline_btn("❌ Close Panel", callback_data="adm_close", style="danger")
     )
     return markup
 
-# ============================================
-# --- AUTOMATIC BACKGROUND THREADS ---
-# ============================================
+# ------------------------------------------------------------------------------
+# AUTOMATIC BACKGROUND SCHEDULERS
+# ------------------------------------------------------------------------------
 def leaderboard_reset_cron():
     while True:
         try:
-            now = datetime.now()
+            now = get_dhaka_now()
             days_until_monday = (7 - now.weekday()) % 7
             if days_until_monday == 0 and now.hour >= 12:
                 days_until_monday = 7
@@ -376,7 +447,7 @@ def leaderboard_reset_cron():
                     if idx < len(prizes) and u_data.get("referrals", 0) > 0:
                         pz = prizes[idx]
                         data["users"][uid]["balance"] += pz
-                        add_transaction(uid, "leaderboard", pz, f"Leaderboard Rank #{idx+1} Reward")
+                        add_transaction(uid, "leaderboard", pz, f"Leaderboard Rank #{idx+1} Reward ({cycle_id})")
                         try:
                             bot.send_message(int(uid), f"🎉 <b>অভিনন্দন!</b> আপনি সাপ্তাহিক লিডারবোর্ডে <b>#{idx+1}</b> স্থান অর্জন করায় <b>${pz}</b> বোনাস পেয়েছেন!", parse_mode="HTML")
                         except Exception as e:
@@ -400,17 +471,17 @@ def inactive_user_reminder_cron():
                 if u_data.get("last_active", 0) < three_days_ago:
                     try:
                         bot.send_message(int(uid), "🔔 <b>আপনার $20 পর্যন্ত বোনাস অপেক্ষা করছে!</b>\nকাজ শুরু করতে এখনই বটে প্রবেশ করুন।", parse_mode="HTML")
-                    except Exception as e:
-                        logging.warning(f"Failed to send inactive reminder to {uid}: {e}")
+                    except Exception:
+                        pass
         except Exception as e:
             logging.error(f"Inactive Reminder Error: {e}")
 
 threading.Thread(target=leaderboard_reset_cron, daemon=True).start()
 threading.Thread(target=inactive_user_reminder_cron, daemon=True).start()
 
-# ============================================
-# --- START COMMAND HANDLER ---
-# ============================================
+# ------------------------------------------------------------------------------
+# COMMAND HANDLER: /start
+# ------------------------------------------------------------------------------
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
     user_id = message.from_user.id
@@ -428,15 +499,15 @@ def start_cmd(message):
 
     args = message.text.split()
     if len(args) > 1 and user.get("referred_by") is None:
-        ref_id = args[1]
+        ref_id = args[1].strip()
         if ref_id != str(user_id) and ref_id in data["users"]:
             update_user(user_id, "referred_by", ref_id)
             ref_user = data["users"][ref_id]
-            if ref_user.get("referrals", 0) > 15:
+            if ref_user.get("referrals", 0) > 15 and data.get("anti_fraud_enabled"):
                 try:
                     bot.send_message(ADMIN_ID, f"⚠️ <b>Rapid Referral Alert!</b>\nUser <code>{ref_id}</code> (@{ref_user.get('username')}) has high rapid referrals!", parse_mode="HTML")
-                except Exception as e:
-                    logging.error(f"Alert send error: {e}")
+                except Exception:
+                    pass
 
     img_buf, captcha_code = generate_image_captcha()
     update_user(user_id, "state", "verify_captcha_code")
@@ -447,9 +518,9 @@ def start_cmd(message):
 
     bot.send_photo(message.chat.id, img_buf, caption="🤖 <b>SECURITY CAPTCHA CHECK:</b>\n\nছবির ক্যাপচা কোডটি সঠিকভাবে নিচে লিখে দিন:", parse_mode="HTML")
 
-# ============================================
-# --- MAIN CALLBACK HANDLER ---
-# ============================================
+# ------------------------------------------------------------------------------
+# CALLBACK QUERY ROUTER
+# ------------------------------------------------------------------------------
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     user_id = call.from_user.id
@@ -477,17 +548,17 @@ def callback_handler(call):
                         "username": call.from_user.username or ""
                     })
                     data["users"][str(user_id)]["ref_rewarded"] = True
-                    add_transaction(ref_id, "referral_bonus", bonus, f"Referral reward for user {user_id}")
+                    add_transaction(ref_id, "referral_bonus", bonus, f"Referral reward for verified user {user_id}")
                     save_db(data)
                     try:
-                        bot.send_message(ref_id, f"🎉 <b>New Referral Verification!</b>\nআপনি রেফার বোনাস <b>${bonus}</b> পেয়েছেন!", parse_mode="HTML")
-                    except Exception as e:
-                        logging.error(f"Failed to send ref bonus msg: {e}")
+                        bot.send_message(ref_id, f"🎉 <b>New Referral Verification!</b>\nআপনি রেফার বোনাস <b>${bonus:.2f}</b> পেয়েছেন!", parse_mode="HTML")
+                    except Exception:
+                        pass
 
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
-        except Exception as e:
-            logging.warning(f"Delete msg failed: {e}")
+        except Exception:
+            pass
 
         bot.send_message(call.message.chat.id, f"✅ <b>ভেরিফিকেশন সফল হয়েছে!</b>\n\n{data['sys_texts']['welcome']}", parse_mode="HTML", reply_markup=get_main_menu(user_id))
 
@@ -495,7 +566,7 @@ def callback_handler(call):
         with db_lock:
             data = load_db()
             user = get_user(user_id)
-            today_str = datetime.now().strftime("%Y-%m-%d")
+            today_str = get_dhaka_date_str()
 
             if user.get("last_bonus_date") == today_str:
                 bot.answer_callback_query(call.id, "❌ আপনি আজ ইতিমধ্যেই ডেইলি বোনাস ক্লেইম করেছেন!", show_alert=True)
@@ -507,8 +578,8 @@ def callback_handler(call):
             add_transaction(user_id, "daily_bonus", b_amt, "Daily Bonus Reward")
             save_db(data)
 
-        bot.answer_callback_query(call.id, f"🎉 আপনি ${b_amt} ডেইলি বোনাস ক্লেইম করেছেন!", show_alert=True)
-        bot.send_message(call.message.chat.id, f"🎉 <b>দৈনিক বোনাস সফলভাবে অ্যাকাউন্টে যোগ করা হয়েছে: ${b_amt}</b>", parse_mode="HTML")
+        bot.answer_callback_query(call.id, f"🎉 আপনি ${b_amt:.2f} ডেইলি বোনাস ক্লেইম করেছেন!", show_alert=True)
+        bot.send_message(call.message.chat.id, f"🎉 <b>দৈনিক বোনাস সফলভাবে অ্যাকাউন্টে যোগ করা হয়েছে: ${b_amt:.2f}</b>", parse_mode="HTML")
 
     elif call.data == "submit_usdt_withdraw":
         user = get_user(user_id)
@@ -516,7 +587,7 @@ def callback_handler(call):
         min_ref = data.get("withdraw_min_ref", 2)
 
         if user["balance"] < min_w:
-            bot.answer_callback_query(call.id, f"❌ আপনার পর্যাপ্ত ব্যালেন্স নেই! মিনিমাম উইথড্র ${min_w}", show_alert=True)
+            bot.answer_callback_query(call.id, f"❌ আপনার পর্যাপ্ত ব্যালেন্স নেই! মিনিমাম উইথড্র ${min_w:.2f}", show_alert=True)
             return
 
         if user.get("referrals", 0) < min_ref:
@@ -539,8 +610,8 @@ def callback_handler(call):
         try:
             bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=call.message.reply_markup)
             bot.answer_callback_query(call.id, "✅ রিফ্রেশ করা হয়েছে!")
-        except Exception as e:
-            logging.warning(f"Wallet refresh edit failed: {e}")
+        except Exception:
+            pass
 
     elif call.data == "set_lang_bn":
         update_user(user_id, "lang", "bn")
@@ -559,14 +630,14 @@ def callback_handler(call):
         if act == "close":
             try:
                 bot.delete_message(call.message.chat.id, call.message.message_id)
-            except Exception as e:
-                logging.warning(f"Admin close delete error: {e}")
+            except Exception:
+                pass
 
         elif act == "force_join":
             markup = InlineKeyboardMarkup(row_width=2)
             markup.add(
-                InlineKeyboardButton("➕ Add Channel", callback_data="adm_add_ch"),
-                InlineKeyboardButton("🗑️ Remove Channel", callback_data="adm_rem_ch")
+                make_inline_btn("➕ Add Channel", callback_data="adm_add_ch", style="success"),
+                make_inline_btn("🗑️ Remove Channel", callback_data="adm_rem_ch", style="danger")
             )
             bot.send_message(call.message.chat.id, f"📢 <b>Force Join Channels:</b>\n<code>{data.get('force_channels', [])}</code>", parse_mode="HTML", reply_markup=markup)
 
@@ -614,23 +685,22 @@ def callback_handler(call):
             for p_key, item in list(proofs.items()):
                 markup = InlineKeyboardMarkup(row_width=2)
                 markup.add(
-                    InlineKeyboardButton("✅ Approve", callback_data=f"appr_proof_{p_key}"),
-                    InlineKeyboardButton("❌ Reject", callback_data=f"rej_proof_{p_key}")
+                    make_inline_btn("✅ Approve Proof", callback_data=f"appr_proof_{p_key}", style="success"),
+                    make_inline_btn("❌ Reject Proof", callback_data=f"rej_proof_{p_key}", style="danger")
                 )
                 bot.send_photo(call.message.chat.id, item["photo"], caption=f"📩 <b>Task Proof Submitted!</b>\nUser ID: <code>{item['user_id']}</code>\nTask: {item['task_name']}", parse_mode="HTML", reply_markup=markup)
 
         elif act == "pending_withdraws":
             withs = data.get("pending_withdraws", {})
-            if not withs:
+            pending_items = {k: v for k, v in withs.items() if v.get("status", "pending") == "pending"}
+            if not pending_items:
                 bot.send_message(call.message.chat.id, "✅ কোনো পেন্ডিং উইথড্র নেই!")
                 return
-            for w_key, item in list(withs.items()):
-                if item.get("status", "pending") != "pending":
-                    continue
+            for w_key, item in list(pending_items.items()):
                 markup = InlineKeyboardMarkup(row_width=2)
                 markup.add(
-                    InlineKeyboardButton("✅ Approve Pay", callback_data=f"appr_with_{w_key}"),
-                    InlineKeyboardButton("❌ Reject & Refund", callback_data=f"rej_with_{w_key}")
+                    make_inline_btn("✅ Approve Pay", callback_data=f"appr_with_{w_key}", style="success"),
+                    make_inline_btn("❌ Reject & Refund", callback_data=f"rej_with_{w_key}", style="danger")
                 )
                 msg_txt = (f"💸 <b>Withdrawal Request!</b>\n"
                            f"ID: <code>{w_key}</code>\n"
@@ -656,8 +726,8 @@ def callback_handler(call):
         elif act == "broadcast_menu":
             markup = InlineKeyboardMarkup(row_width=1)
             markup.add(
-                InlineKeyboardButton("📢 Text Broadcast", callback_data="adm_bcast_text"),
-                InlineKeyboardButton("📌 Pin Broadcast", callback_data="adm_bcast_pin")
+                make_inline_btn("📢 Text Broadcast", callback_data="adm_bcast_text", style="primary"),
+                make_inline_btn("📌 Pin Broadcast", callback_data="adm_bcast_pin", style="primary")
             )
             bot.send_message(call.message.chat.id, "📢 <b>Broadcast Panel:</b>", parse_mode="HTML", reply_markup=markup)
 
@@ -676,7 +746,7 @@ def callback_handler(call):
         elif act == "stats":
             msg = (f"📊 <b>Live Analytics Dashboard</b>\n\n"
                    f"👥 Total Registered Users: {len(data['users'])}\n"
-                   f"💸 Pending Withdrawals: {len(data['pending_withdraws'])}\n"
+                   f"💸 Pending Withdrawals: {len([w for w in data['pending_withdraws'].values() if w.get('status') == 'pending'])}\n"
                    f"📥 Pending Task Proofs: {len(data['pending_proofs'])}\n"
                    f"🚫 Banned Users: {len(data['banned_users'])}")
             bot.send_message(call.message.chat.id, msg, parse_mode="HTML")
@@ -707,7 +777,7 @@ def callback_handler(call):
             else:
                 markup = InlineKeyboardMarkup(row_width=1)
                 for btn_n in cbtns.keys():
-                    markup.add(InlineKeyboardButton(f"🗑️ Delete: {btn_n}", callback_data=f"del_cbtn_{btn_n}"))
+                    markup.add(make_inline_btn(f"🗑️ Delete: {btn_n}", callback_data=f"del_cbtn_{btn_n}", style="danger"))
                 bot.send_message(call.message.chat.id, "🗑️ মুছে ফেলার বাটন সিলেক্ট করুন:", reply_markup=markup)
 
         elif act == "unlock_cond":
@@ -752,8 +822,8 @@ def callback_handler(call):
                 bot.answer_callback_query(call.id, f"✅ '{btn_n}' মুছে ফেলা হয়েছে!", show_alert=True)
                 try:
                     bot.delete_message(call.message.chat.id, call.message.message_id)
-                except Exception as e:
-                    logging.warning(f"Custom btn del msg error: {e}")
+                except Exception:
+                    pass
 
     elif call.data.startswith("appr_proof_") or call.data.startswith("rej_proof_"):
         if int(user_id) != ADMIN_ID:
@@ -771,19 +841,19 @@ def callback_handler(call):
                     data["users"][u_id]["completed_tasks"] += 1
                     data["users"][u_id]["pending_tasks"] = max(0, data["users"][u_id]["pending_tasks"] - 1)
                     add_transaction(u_id, "task_reward", item["rate"], f"Task Proof Approved: {item['task_name']}")
-                    bot.edit_message_caption(f"✅ Approved! ${item['rate']} added.", call.message.chat.id, call.message.message_id)
+                    bot.edit_message_caption(f"✅ Approved! ${item['rate']:.2f} added.", call.message.chat.id, call.message.message_id)
                     try:
-                        bot.send_message(u_id, f"🎉 আপনার টাস্ক প্রুফ এপ্রুভ হয়েছে! <b>${item['rate']}</b> ব্যালেন্সে যোগ করা হয়েছে।", parse_mode="HTML")
-                    except Exception as e:
-                        logging.error(f"Failed to send task approval msg: {e}")
+                        bot.send_message(u_id, f"🎉 আপনার টাস্ক প্রুফ এপ্রুভ হয়েছে! <b>${item['rate']:.2f}</b> ব্যালেন্সে যোগ করা হয়েছে।", parse_mode="HTML")
+                    except Exception:
+                        pass
                 else:
                     data["users"][u_id]["rejected_tasks"] += 1
                     data["users"][u_id]["pending_tasks"] = max(0, data["users"][u_id]["pending_tasks"] - 1)
                     bot.edit_message_caption("❌ Task Proof Rejected!", call.message.chat.id, call.message.message_id)
                     try:
                         bot.send_message(u_id, "❌ আপনার জমা দেওয়া টাস্ক প্রুফটি বাতিল করা হয়েছে।", parse_mode="HTML")
-                    except Exception as e:
-                        logging.error(f"Failed to send task rejection msg: {e}")
+                    except Exception:
+                        pass
                 del data["pending_proofs"][p_key]
                 save_db(data)
 
@@ -806,33 +876,35 @@ def callback_handler(call):
 
                 if act == "appr":
                     item["status"] = "approved"
+                    item["processed_at"] = get_dhaka_now().strftime("%Y-%m-%d %H:%M:%S")
                     data["users"][u_id]["total_withdraw"] += gross_amt
-                    bot.edit_message_text(f"✅ Withdrawal Paid (${gross_amt}) to {item['wallet']}", call.message.chat.id, call.message.message_id)
+                    bot.edit_message_text(f"✅ Withdrawal Paid (${gross_amt:.2f}) to {item['wallet']}", call.message.chat.id, call.message.message_id)
                     try:
                         bot.send_message(u_id, f"🎉 আপনার <b>${gross_amt:.2f}</b> উইথড্র সফলভাবে পেমেন্ট করা হয়েছে!", parse_mode="HTML")
-                    except Exception as e:
-                        logging.error(f"Withdrawal notify error: {e}")
+                    except Exception:
+                        pass
 
                     pay_ch = data.get("payment_proof_channel", "")
                     if pay_ch:
                         try:
                             bot.send_message(pay_ch, f"🎉 <b>New Payment Paid Out!</b>\n\n👤 User: <code>{u_id}</code>\n💳 Wallet: <code>{item['wallet']}</code>\n💰 Amount: <b>${gross_amt:.2f} USDT</b>\n⚡ Status: Approved ✅", parse_mode="HTML")
                         except Exception as e:
-                            logging.error(f"Payment proof channel error: {e}")
+                            logging.error(f"Failed sending payment proof to channel: {e}")
                 else:
                     item["status"] = "rejected"
+                    item["processed_at"] = get_dhaka_now().strftime("%Y-%m-%d %H:%M:%S")
                     data["users"][u_id]["balance"] += gross_amt
                     add_transaction(u_id, "withdraw_refund", gross_amt, f"Withdrawal Refund for Request {w_key}")
                     bot.edit_message_text("❌ Withdrawal Rejected & Refunded!", call.message.chat.id, call.message.message_id)
                     try:
                         bot.send_message(u_id, f"❌ আপনার <b>${gross_amt:.2f}</b> উইথড্র বাতিল করা হয়েছে এবং ব্যালেন্স রিফান্ড করা হয়েছে।", parse_mode="HTML")
-                    except Exception as e:
-                        logging.error(f"Refund notify error: {e}")
+                    except Exception:
+                        pass
                 save_db(data)
 
-# ============================================
-# --- MAIN MESSAGE ROUTER ---
-# ============================================
+# ------------------------------------------------------------------------------
+# MAIN MESSAGE ROUTER
+# ------------------------------------------------------------------------------
 @bot.message_handler(func=lambda message: True, content_types=['text', 'photo'])
 def handle_text_messages(message):
     user_id = message.from_user.id
@@ -850,7 +922,13 @@ def handle_text_messages(message):
     state = user.get("state")
     txt = message.text.strip() if message.text else ""
 
-    # Initial Start Captcha Code Verification Flow
+    # Reset State Command / Cancel Button
+    if txt in ["🔙 Back", "/cancel"]:
+        update_user(user_id, "state", None)
+        bot.send_message(message.chat.id, "Main Menu", reply_markup=get_main_menu(user_id))
+        return
+
+    # Security Captcha Check
     if state == "verify_captcha_code":
         c_ans = user.get("temp_data", {}).get("captcha_ans", "")
         if txt and c_ans and txt.upper() == c_ans.upper():
@@ -867,58 +945,40 @@ def handle_text_messages(message):
             else:
                 bot.send_message(message.chat.id, "✅ <b>ক্যাপচা সফল হয়েছে!</b>", parse_mode="HTML", reply_markup=get_main_menu(user_id))
         else:
-            bot.send_message(message.chat.id, "❌ <b>ভুল ক্যাপচা কোড!</b> পুনরায় চেষ্টা করতে /start চাপুন।", parse_mode="HTML")
+            img_buf, new_code = generate_image_captcha()
+            with db_lock:
+                d = load_db()
+                d["users"][str(user_id)]["temp_data"]["captcha_ans"] = new_code
+                save_db(d)
+            bot.send_photo(message.chat.id, img_buf, caption="❌ <b>ভুল ক্যাপচা কোড!</b>\nনতুন কোড টাইপ করুন:", parse_mode="HTML")
         return
 
-    # Real-time Enforcement Check
+    # Force Join Check Guard
     left = check_force_join(user_id)
     if left and int(user_id) != ADMIN_ID:
         bot.send_message(message.chat.id, "⚠️ <b>আপনি আমাদের চ্যানেল থেকে লিভ নিয়েছেন! কাজ চালিয়ে যেতে আবার জয়েন করুন:</b>", parse_mode="HTML", reply_markup=get_force_join_markup(left))
         return
 
-    # ==================== CAPTCHA EARNING TASK AUDITED FLOW ====================
+    # Captcha Earning Solver State
     if state == "user_solving_earning_captcha":
-        # Atomically fetch and remove stored answer to prevent duplicate submissions
-        with db_lock:
-            d = load_db()
-            saved_ans = d["users"][str(user_id)].get("temp_data", {}).pop("earn_captcha_ans", None)
-            d["users"][str(user_id)]["state"] = None
-            save_db(d)
-
-        c_rate = data["tasks"].get("captcha", {}).get("rate", 0.02)
-        c_limit = data["tasks"].get("captcha", {}).get("limit", 20)
-        today_str = datetime.now().strftime("%Y-%m-%d")
-
-        if saved_ans and txt.upper() == saved_ans.upper():
+        ans = user.get("temp_data", {}).get("earn_captcha_ans", "")
+        if txt and ans and txt.upper() == ans.upper():
+            c_rate = data["tasks"]["captcha"]["rate"]
             with db_lock:
                 d = load_db()
-                current_counts = d["users"][str(user_id)].get("daily_task_counts", {}).get(today_str, {})
-                c_done = current_counts.get("captcha", 0) + 1
-                
-                # Check limit again for security
-                if c_done <= c_limit:
-                    d["users"][str(user_id)]["balance"] += c_rate
-                    if "daily_task_counts" not in d["users"][str(user_id)]:
-                        d["users"][str(user_id)]["daily_task_counts"] = {}
-                    if today_str not in d["users"][str(user_id)]["daily_task_counts"]:
-                        d["users"][str(user_id)]["daily_task_counts"][today_str] = {}
-                    d["users"][str(user_id)]["daily_task_counts"][today_str]["captcha"] = c_done
-                    new_bal = d["users"][str(user_id)]["balance"]
-                    save_db(d)
-                    add_transaction(user_id, "captcha_earn", c_rate, "Solved Captcha Reward")
-
-                    success_msg = (
-                        f"🎉 <b>CAPTCHA COMPLETED!</b>\n\n"
-                        f"✅ <b>সঠিক উত্তর!</b>\n"
-                        f"💰 <b>Reward:</b> ${c_rate:.2f}\n"
-                        f"💳 <b>আপনার নতুন Balance:</b> ${new_bal:.2f}\n"
-                        f"📊 <b>আজকের কাজ:</b> {c_done}/{c_limit}"
-                    )
-                    bot.send_message(message.chat.id, success_msg, parse_mode="HTML", reply_markup=get_main_menu(user_id))
-                else:
-                    bot.send_message(message.chat.id, "❌ <b>আজকের ক্যাপচা সীমা শেষ হয়ে গেছে!</b>", parse_mode="HTML", reply_markup=get_main_menu(user_id))
+                d["users"][str(user_id)]["balance"] += c_rate
+                today_str = get_dhaka_date_str()
+                counts = d["users"][str(user_id)]["daily_task_counts"].get(today_str, {})
+                counts["captcha"] = counts.get("captcha", 0) + 1
+                d["users"][str(user_id)]["daily_task_counts"][today_str] = counts
+                d["users"][str(user_id)]["temp_data"]["earn_captcha_ans"] = None
+                save_db(d)
+                add_transaction(user_id, "captcha_earn", c_rate, "Solved Captcha Earn")
+            update_user(user_id, "state", None)
+            bot.send_message(message.chat.id, f"✅ <b>সঠিক ক্যাপচা!</b> আপনার ওয়ালেটে <b>${c_rate:.2f}</b> যোগ করা হয়েছে।", parse_mode="HTML", reply_markup=get_main_menu(user_id))
         else:
-            bot.send_message(message.chat.id, "❌ <b>ভুল উত্তর!</b> কোনো রিওয়ার্ড দেওয়া হয়নি। পুনরায় চেষ্টার জন্য বাটন চাপুন।", parse_mode="HTML", reply_markup=get_main_menu(user_id))
+            update_user(user_id, "state", None)
+            bot.send_message(message.chat.id, "❌ <b>ভুল কোড!</b> পুনরায় চেষ্টার জন্য বাটন প্রেস করুন।", parse_mode="HTML", reply_markup=get_main_menu(user_id))
         return
 
     # ==================== USER FLOW STATES ====================
@@ -950,8 +1010,8 @@ def handle_text_messages(message):
             time.sleep(1)
             try:
                 bot.delete_message(message.chat.id, msg_proc.message_id)
-            except Exception as e:
-                logging.warning(f"Delete msg error: {e}")
+            except Exception:
+                pass
 
             wallet = user["temp_data"].get("wallet", "")
             with db_lock:
@@ -966,14 +1026,13 @@ def handle_text_messages(message):
                     "net_amount": net_amt,
                     "amount": net_amt,
                     "status": "pending",
-                    "time": time.strftime("%Y-%m-%d %H:%M:%S")
+                    "time": get_dhaka_now().strftime("%Y-%m-%d %H:%M:%S")
                 }
                 add_transaction(user_id, "withdraw_pending", -amt, f"Withdrawal request {w_key}")
                 save_db(data)
 
             update_user(user_id, "state", None)
 
-            # Notify Admin
             try:
                 adm_msg = (f"📥 <b>NEW WITHDRAWAL REQUEST!</b>\n\n"
                            f"ID: <code>{w_key}</code>\n"
@@ -985,8 +1044,8 @@ def handle_text_messages(message):
                            f"Net: <b>${net_amt:.2f}</b>")
                 markup = InlineKeyboardMarkup(row_width=2)
                 markup.add(
-                    InlineKeyboardButton("✅ Approve", callback_data=f"appr_with_{w_key}"),
-                    InlineKeyboardButton("❌ Reject", callback_data=f"rej_with_{w_key}")
+                    make_inline_btn("✅ Approve", callback_data=f"appr_with_{w_key}", style="success"),
+                    make_inline_btn("❌ Reject", callback_data=f"rej_with_{w_key}", style="danger")
                 )
                 bot.send_message(ADMIN_ID, adm_msg, parse_mode="HTML", reply_markup=markup)
             except Exception as e:
@@ -1002,26 +1061,29 @@ def handle_text_messages(message):
         update_user(user_id, "state", None)
         try:
             bot.send_message(ADMIN_ID, f"📩 <b>New Support Ticket!</b>\nUser: <code>{user_id}</code> (@{user.get('username')})\nMessage: {txt}", parse_mode="HTML")
-        except Exception as e:
-            logging.error(f"Support ticket notify error: {e}")
+        except Exception:
+            pass
         bot.send_message(message.chat.id, "✅ <b>আপনার সাপোর্ট টিকিট এডমিনের কাছে পাঠানো হয়েছে!</b>", parse_mode="HTML", reply_markup=get_main_menu(user_id))
         return
 
-    elif state == "submit_micro_task_ss" and message.photo:
-        photo_id = message.photo[-1].file_id
-        p_key = f"proof_{user_id}_{int(time.time())}"
-        with db_lock:
-            data = load_db()
-            data["pending_proofs"][p_key] = {
-                "user_id": user_id,
-                "photo": photo_id,
-                "task_name": "Micro Task Proof",
-                "rate": data["tasks"]["micro_task"]["rate"]
-            }
-            data["users"][str(user_id)]["pending_tasks"] += 1
-            save_db(data)
-        update_user(user_id, "state", None)
-        bot.send_message(message.chat.id, "✅ <b>আপনার প্রুফ স্ক্রিনশট জমা নেওয়া হয়েছে! এডমিন চেক করে বোনাস যুক্ত করবে।</b>", parse_mode="HTML", reply_markup=get_main_menu(user_id))
+    elif state == "submit_micro_task_ss":
+        if message.photo:
+            photo_id = message.photo[-1].file_id
+            p_key = f"proof_{user_id}_{int(time.time())}"
+            with db_lock:
+                data = load_db()
+                data["pending_proofs"][p_key] = {
+                    "user_id": user_id,
+                    "photo": photo_id,
+                    "task_name": "Micro Task Proof",
+                    "rate": data["tasks"]["micro_task"]["rate"]
+                }
+                data["users"][str(user_id)]["pending_tasks"] += 1
+                save_db(data)
+            update_user(user_id, "state", None)
+            bot.send_message(message.chat.id, "✅ <b>আপনার প্রুফ স্ক্রিনশট জমা নেওয়া হয়েছে! এডমিন চেক করে বোনাস যুক্ত করবে।</b>", parse_mode="HTML", reply_markup=get_main_menu(user_id))
+        else:
+            bot.send_message(message.chat.id, "❌ <b>অনুগ্রহ করে আপনার কাজের স্ক্রিনশট (Photo) টি পাঠাতুন।</b>")
         return
 
     # ==================== ADMIN INPUT STATES ====================
@@ -1045,6 +1107,8 @@ def handle_text_messages(message):
                     data["force_channels"].remove(txt)
                     save_db(data)
                     bot.send_message(message.chat.id, f"🗑️ চ্যানেল রিমুভ হয়েছে: {txt}")
+                else:
+                    bot.send_message(message.chat.id, f"❌ চ্যানেল পাওয়া যায়নি: {txt}")
             update_user(user_id, "state", None)
             return
 
@@ -1055,8 +1119,8 @@ def handle_text_messages(message):
                     data = load_db()
                     data["ref_bonus_verify"] = v
                     save_db(data)
-                bot.send_message(message.chat.id, f"✅ নতুন রেফার বোনাস: ${v}")
-            except Exception:
+                bot.send_message(message.chat.id, f"✅ নতুন রেফার বোনাস: ${v:.2f}")
+            except ValueError:
                 bot.send_message(message.chat.id, "❌ সংখ্যা লিখুন।")
             update_user(user_id, "state", None)
             return
@@ -1068,8 +1132,8 @@ def handle_text_messages(message):
                     data = load_db()
                     data["min_withdraw"] = v
                     save_db(data)
-                bot.send_message(message.chat.id, f"✅ মিনিমাম উইথড্র: ${v}")
-            except Exception:
+                bot.send_message(message.chat.id, f"✅ মিনিমাম উইথড্র: ${v:.2f}")
+            except ValueError:
                 bot.send_message(message.chat.id, "❌ সংখ্যা লিখুন।")
             update_user(user_id, "state", None)
             return
@@ -1082,7 +1146,7 @@ def handle_text_messages(message):
                     data["withdraw_fee_percent"] = v
                     save_db(data)
                 bot.send_message(message.chat.id, f"✅ উইথড্র ফি: {v}%")
-            except Exception:
+            except ValueError:
                 bot.send_message(message.chat.id, "❌ সংখ্যা লিখুন।")
             update_user(user_id, "state", None)
             return
@@ -1166,12 +1230,12 @@ def handle_text_messages(message):
                     if mode == "pin":
                         try:
                             bot.pin_chat_message(int(uid), m.message_id)
-                        except Exception as e:
-                            logging.warning(f"Pin message failed: {e}")
+                        except Exception:
+                            pass
                     succ += 1
-                except Exception as e:
+                except Exception:
                     fail += 1
-                time.sleep(0.05)
+                time.sleep(0.04)
             bot.send_message(message.chat.id, f"✅ Broadcast sent!\nSuccess: {succ}\nFailed/Blocked: {fail}")
             update_user(user_id, "state", None)
             return
@@ -1186,11 +1250,11 @@ def handle_text_messages(message):
                         data["users"][u_target]["balance"] += v_amt
                         add_transaction(u_target, "admin_add", v_amt, "Added balance by Admin")
                         save_db(data)
-                        bot.send_message(message.chat.id, f"✅ Added ${v_amt} to {u_target}")
+                        bot.send_message(message.chat.id, f"✅ Added ${v_amt:.2f} to {u_target}")
                         try:
-                            bot.send_message(int(u_target), f"🎉 Admin added ${v_amt} to your balance!")
-                        except Exception as e:
-                            logging.error(f"Notify user failed: {e}")
+                            bot.send_message(int(u_target), f"🎉 Admin added ${v_amt:.2f} to your balance!")
+                        except Exception:
+                            pass
             except Exception:
                 bot.send_message(message.chat.id, "❌ ফরম্যাট: `USER_ID AMOUNT`", parse_mode="Markdown")
             update_user(user_id, "state", None)
@@ -1206,7 +1270,7 @@ def handle_text_messages(message):
                         data["users"][u_target]["balance"] = max(0.0, data["users"][u_target]["balance"] - v_amt)
                         add_transaction(u_target, "admin_cut", -v_amt, "Cut balance by Admin")
                         save_db(data)
-                        bot.send_message(message.chat.id, f"✅ Cut ${v_amt} from {u_target}")
+                        bot.send_message(message.chat.id, f"✅ Cut ${v_amt:.2f} from {u_target}")
             except Exception:
                 bot.send_message(message.chat.id, "❌ ফরম্যাট: `USER_ID AMOUNT`", parse_mode="Markdown")
             update_user(user_id, "state", None)
@@ -1272,8 +1336,8 @@ def handle_text_messages(message):
                     data = load_db()
                     data["daily_bonus_amount"] = v
                     save_db(data)
-                bot.send_message(message.chat.id, f"✅ Daily Bonus set to ${v}")
-            except Exception:
+                bot.send_message(message.chat.id, f"✅ Daily Bonus set to ${v:.2f}")
+            except ValueError:
                 bot.send_message(message.chat.id, "❌ সংখ্যা লিখুন।")
             update_user(user_id, "state", None)
             return
@@ -1283,7 +1347,7 @@ def handle_text_messages(message):
                 data = load_db()
                 data["auto_payment_api"] = txt.strip()
                 save_db(data)
-            bot.send_message(message.chat.id, "✅ Auto-Payment API Saved!")
+            bot.send_message(message.chat.id, "✅ Auto-Payment API Configuration Saved!")
             update_user(user_id, "state", None)
             return
 
@@ -1318,7 +1382,7 @@ def handle_text_messages(message):
                f"⏳ পেন্ডিং টাস্ক: <b>{user['pending_tasks']} টি</b>\n"
                f"❌ রিজেক্ট টাস্ক: <b>{user['rejected_tasks']} টি</b>")
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🔄 রিফ্রেশ করুন", callback_data="refresh_wallet"))
+        markup.add(make_inline_btn("🔄 রিফ্রেশ করুন", callback_data="refresh_wallet", style="primary"))
         bot.send_message(message.chat.id, msg, parse_mode="HTML", reply_markup=markup)
 
     elif txt == TXT_REFER:
@@ -1334,14 +1398,14 @@ def handle_text_messages(message):
         share_tg = f"https://t.me/share/url?url={ref_link}&text=Join%20Bot%20and%20Earn!"
         share_wa = f"https://api.whatsapp.com/send?text=Join%20Bot%20and%20Earn:%20{ref_link}"
         markup.add(
-            InlineKeyboardButton("📲 WhatsApp-শেয়ার", url=share_wa),
-            InlineKeyboardButton("✈️ Telegram-শেয়ার", url=share_tg)
+            make_inline_btn("📲 WhatsApp-শেয়ার", url=share_wa),
+            make_inline_btn("✈️ Telegram-শেয়ার", url=share_tg)
         )
         bot.send_message(message.chat.id, msg, parse_mode="HTML", reply_markup=markup)
 
     elif txt == TXT_DAILY_BONUS:
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🎁 Claim Daily Bonus", callback_data="claim_daily_bonus"))
+        markup.add(make_inline_btn("🎁 Claim Daily Bonus", callback_data="claim_daily_bonus", style="success"))
         bot.send_message(message.chat.id, "🎁 <b>দৈনিক বোনাস ক্লেম করতে নিচের বাটনে চাপ দিন:</b>", parse_mode="HTML", reply_markup=markup)
 
     elif txt == TXT_MY_WORKS:
@@ -1362,14 +1426,14 @@ def handle_text_messages(message):
         else:
             ad_task = data["tasks"].get("watch_ads", {"desc": "Watch Video Ads", "link": "https://example.com/ads", "rate": 0.01})
             markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("▶️ Watch Ad Now", url=ad_task["link"]))
-            bot.send_message(message.chat.id, f"📺 <b>Watch Ads Task:</b>\n{ad_task['desc']}\nReward Rate: ${ad_task['rate']}", parse_mode="HTML", reply_markup=markup)
+            markup.add(make_inline_btn("▶️ Watch Ad Now", url=ad_task["link"], style="primary"))
+            bot.send_message(message.chat.id, f"📺 <b>Watch Ads Task:</b>\n{ad_task['desc']}\nReward Rate: ${ad_task['rate']:.2f}", parse_mode="HTML", reply_markup=markup)
 
     elif txt == "🌐 𝑺𝒉𝒐𝒓𝒕𝒍𝒊𝒏𝒌 𝑩𝒐𝒏𝒖𝒔":
         st = data["tasks"]["shortlink"]
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🔗 Open Shortlink", url=st["link"]))
-        bot.send_message(message.chat.id, f"🌐 <b>Shortlink Task:</b>\n{st['desc']}\nLink: {st['link']}\nRate: ${st['rate']}", parse_mode="HTML", reply_markup=markup)
+        markup.add(make_inline_btn("🔗 Open Shortlink", url=st["link"], style="primary"))
+        bot.send_message(message.chat.id, f"🌐 <b>Shortlink Task:</b>\n{st['desc']}\nLink: {st['link']}\nRate: ${st['rate']:.2f}", parse_mode="HTML", reply_markup=markup)
 
     elif txt == "📋 𝑺𝒖𝒓𝒗𝒆𝒚 & 𝑮𝒂𝒎𝒆𝒔":
         cond = data["unlock_conditions"].get("survey_apps", {"ref": 0})
@@ -1378,15 +1442,15 @@ def handle_text_messages(message):
         else:
             sv = data["tasks"]["survey"]
             markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("📋 Start Survey", url=sv["link"]))
-            bot.send_message(message.chat.id, f"📋 <b>Survey Task:</b>\n{sv['desc']}\nRate: ${sv['rate']}", parse_mode="HTML", reply_markup=markup)
+            markup.add(make_inline_btn("📋 Start Survey", url=sv["link"], style="primary"))
+            bot.send_message(message.chat.id, f"📋 <b>Survey Task:</b>\n{sv['desc']}\nRate: ${sv['rate']:.2f}", parse_mode="HTML", reply_markup=markup)
 
     elif txt == "⌨️ 𝑪𝒂𝒑𝒕𝒄𝒉𝒂 𝑬𝒂𝒓𝒏":
         cond = data["unlock_conditions"].get("captcha_earn", {"ref": 0})
         if user.get("referrals", 0) < cond["ref"]:
             bot.send_message(message.chat.id, f"🔒 <b>ক্যাপচা আয় আনলক করতে অন্তত {cond['ref']} জন রেফার লাগবে।</b>", parse_mode="HTML")
         else:
-            today_str = datetime.now().strftime("%Y-%m-%d")
+            today_str = get_dhaka_date_str()
             c_limit = data["tasks"]["captcha"].get("limit", 20)
             user_counts = user.get("daily_task_counts", {}).get(today_str, {})
             c_done = user_counts.get("captcha", 0)
@@ -1403,29 +1467,26 @@ def handle_text_messages(message):
                 save_db(d)
             bot.send_photo(message.chat.id, img_buf, caption=f"⌨️ <b>Captcha Earning Task ({c_done+1}/{c_limit}):</b>\n\nনিচের ছবিতে দেয়া কোডটি সঠিকভাবে মেসেজে লিখুন:", parse_mode="HTML")
 
-    elif txt == "🔙 Back":
-        bot.send_message(message.chat.id, "Main Menu", reply_markup=get_main_menu(user_id))
-
     elif txt == TXT_WITHDRAW:
-        msg = f"📥 <b>USDT Withdrawal System</b>\n\nআপনার ব্যালেন্স: <b>${user['balance']:.2f} USDT</b>\nমিনিমাম উইথড্র: <b>${data.get('min_withdraw', 5.0)} USDT</b>"
+        msg = f"📥 <b>USDT Withdrawal System</b>\n\nআপনার ব্যালেন্স: <b>${user['balance']:.2f} USDT</b>\nমিনিমাম উইথড্র: <b>${data.get('min_withdraw', 5.0):.2f} USDT</b>"
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("💸 উইথড্র করুন", callback_data="submit_usdt_withdraw"))
+        markup.add(make_inline_btn("💸 উইথড্র করুন", callback_data="submit_usdt_withdraw", style="success"))
         bot.send_message(message.chat.id, msg, parse_mode="HTML", reply_markup=markup)
 
     elif txt == TXT_LEADERBOARD:
         prizes = data.get("leaderboard_prizes", [10.0, 4.0, 1.0])
         msg = (f"📊 <b>Weekly Top Leaderboard Rewards</b> 📊\n\n"
-               f"🥇 1st Place: <b>${prizes[0]} USDT</b>\n"
-               f"🥈 2nd Place: <b>${prizes[1]} USDT</b>\n"
-               f"🥉 3rd Place: <b>${prizes[2]} USDT</b>\n\n"
+               f"🥇 1st Place: <b>${prizes[0]:.2f} USDT</b>\n"
+               f"🥈 2nd Place: <b>${prizes[1]:.2f} USDT</b>\n"
+               f"🥉 3rd Place: <b>${prizes[2]:.2f} USDT</b>\n\n"
                f"⏰ <i>প্রতি সোমবার দুপুর ১২:০০ টায় স্বয়ংক্রিয়ভাবে বিজয়ীদের পুরস্কৃত করা হয়!</i>")
         bot.send_message(message.chat.id, msg, parse_mode="HTML")
 
     elif txt == TXT_SETTINGS:
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
-            InlineKeyboardButton("🇧🇩 বাংলা", callback_data="set_lang_bn"),
-            InlineKeyboardButton("🇬🇧 English", callback_data="set_lang_en")
+            make_inline_btn("🇧🇩 বাংলা", callback_data="set_lang_bn", style="primary"),
+            make_inline_btn("🇬🇧 English", callback_data="set_lang_en", style="primary")
         )
         bot.send_message(message.chat.id, f"⚙️ <b>Settings & Support</b>\n\n{data['sys_texts']['help_text']}\n\nআপনার কোনো বার্তা থাকলে নিচে টাইপ করুন:", parse_mode="HTML", reply_markup=markup)
         update_user(user_id, "state", "user_submit_support_ticket")
@@ -1437,9 +1498,9 @@ def handle_text_messages(message):
         resp = data["custom_buttons"][txt]
         bot.send_message(message.chat.id, f"🔘 <b>{txt}</b>\n\n{resp}", parse_mode="HTML")
 
-# ============================================
-# --- ENGINE START ---
-# ============================================
+# ------------------------------------------------------------------------------
+# BOT ENGINE INITIALIZATION
+# ------------------------------------------------------------------------------
 if __name__ == "__main__":
     keep_alive()
     logging.info(f"🚀 {BOT_NAME} Started Successfully...")
