@@ -51,10 +51,15 @@ def keep_alive():
 # ============================================
 # --- CONFIGURATION & SECURITY ---
 # ============================================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+# 👇 এখানে আপনার আসল বট টোকেনটি বসিয়ে দিন (যদি Render Environment এ না দেন)
+MY_DIRECT_BOT_TOKEN = "8979865542:AAHvj7S0mk55JTyEi94s6Ul4kpaxJiUomvU" 
+
+# Render Environment চেক করবে, না পেলে উপরের টোকেন ব্যবহার করবে
+BOT_TOKEN = os.getenv("BOT_TOKEN") or MY_DIRECT_BOT_TOKEN
 ADMIN_ID_RAW = os.getenv("ADMIN_ID", "7833766898")
 
-if not BOT_TOKEN:
+if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
     logging.critical("CRITICAL: BOT_TOKEN environment variable is missing! Server cannot start.")
     sys.exit("Error: BOT_TOKEN Environment Variable is required.")
 
